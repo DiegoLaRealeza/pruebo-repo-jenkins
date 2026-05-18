@@ -1,0 +1,329 @@
+# .github/workflows/build-python-portable.yml
+
+name: Build Python Portable
+
+on:
+  workflow_dispatch:
+    inputs:
+      python_minor:
+        description: "Versión menor de Python a usar"
+        required: true
+        default: "3.11"
+      pbs_release:
+        description: "Release tag de astral-sh/python-build-standalone"
+        required: true
+        default: "20260510"
+
+  push:
+    paths:
+      - "requirements.txt"
+      - ".github/workflows/build-python-portable.yml"
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_MINOR: ${{ github.event.inputs.python_minor || '3.11' }}
+  PBS_RELEASE: ${{ github.event.inputs.pbs_release || '20260510' }}
+  PLATFORM: x86_64-unknown-linux-gnu
+  PORTABLE_NAME: python-portable-linux-x86_64
+
+jobs:
+  build-python-portable:
+    name: Build Python portable
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create requirements.txt if missing
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f requirements.txt ]]; then
+            cat > requirements.txt <<'REQ'
+          Jinja2>=3.1.2
+          pymssql == 2.2.10
+          mysql-connector-python == 8.2.0
+          fastapi == 0.104.1
+          dictor == 0.1.12
+          sqlalchemy == 2.0.23
+          requests == 2.31.0
+          cryptography == 41.0.3
+          python-dateutil == 2.8.2
+          python-dotenv>=1.0.0
+          python-jenkins>=1.8.2
+          PyYAML
+          pytz == 2023.3
+          pydantic == 2.6.2
+          pyodbc
+          psycopg2-binary == 2.9.11
+          REQ
+          fi
+
+          echo "requirements.txt final:"
+          cat requirements.txt
+
+      - name: Install OS runtime dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates \
+            curl \
+            unixodbc
+
+      - name: Resolve Python standalone asset URL
+        id: resolve_python
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' > python_asset_url.txt
+          import json
+          import os
+          import re
+          import sys
+          import urllib.request
+
+          repo = "astral-sh/python-build-standalone"
+          release = os.environ["PBS_RELEASE"]
+          python_minor = os.environ["PYTHON_MINOR"]
+          platform = os.environ["PLATFORM"]
+
+          api_url = f"https://api.github.com/repos/{repo}/releases/tags/{release}"
+
+          request = urllib.request.Request(
+              api_url,
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "github-actions-python-portable-builder",
+              },
+          )
+
+          with urllib.request.urlopen(request) as response:
+              data = json.load(response)
+
+          pattern = re.compile(
+              rf"cpython-{re.escape(python_minor)}\.\d+\+{re.escape(release)}-"
+              rf"{re.escape(platform)}-install_only\.tar\.gz$"
+          )
+
+          matches = [
+              asset["browser_download_url"]
+              for asset in data.get("assets", [])
+              if pattern.fullmatch(asset["name"])
+          ]
+
+          if not matches:
+              print(
+                  f"No se encontró asset para Python {python_minor}, "
+                  f"release {release}, platform {platform}",
+                  file=sys.stderr,
+              )
+              print("Assets disponibles:", file=sys.stderr)
+              for asset in data.get("assets", []):
+                  print(f" - {asset['name']}", file=sys.stderr)
+              sys.exit(1)
+
+          print(matches[0])
+          PY
+
+          PYTHON_URL="$(cat python_asset_url.txt)"
+          echo "Python standalone URL: ${PYTHON_URL}"
+          echo "url=${PYTHON_URL}" >> "${GITHUB_OUTPUT}"
+
+      - name: Download and extract Python standalone
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "${PORTABLE_NAME}"
+          mkdir -p "${PORTABLE_NAME}"
+
+          curl -fsSL "${{ steps.resolve_python.outputs.url }}" -o python-standalone.tar.gz
+
+          tar -xzf python-standalone.tar.gz -C "${PORTABLE_NAME}"
+
+          test -x "${PORTABLE_NAME}/python/bin/python3"
+
+          "${PORTABLE_NAME}/python/bin/python3" --version
+          "${PORTABLE_NAME}/python/bin/python3" -c "import sys; print(sys.executable); print(sys.prefix)"
+
+      - name: Install Python requirements inside portable Python
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PYBIN="${PWD}/${PORTABLE_NAME}/python/bin/python3"
+
+          "${PYBIN}" -m ensurepip --upgrade
+          "${PYBIN}" -m pip install --upgrade pip setuptools wheel
+
+          # --only-binary evita compilar desde source.
+          # Si no existe wheel compatible, el build debe fallar.
+          "${PYBIN}" -m pip install \
+            --no-cache-dir \
+            --only-binary=:all: \
+            -r requirements.txt
+
+          "${PYBIN}" -m pip check
+          "${PYBIN}" -m pip freeze | tee "${PORTABLE_NAME}/requirements-freeze.txt"
+
+      - name: Bundle native shared libraries best effort
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PORTABLE_DIR="${PWD}/${PORTABLE_NAME}"
+          NATIVE_LIB_DIR="${PORTABLE_DIR}/native-libs"
+
+          mkdir -p "${NATIVE_LIB_DIR}"
+
+          while IFS= read -r sofile; do
+            echo "Analizando dependencias nativas: ${sofile}"
+
+            while IFS= read -r lib; do
+              [[ -f "${lib}" ]] || continue
+
+              base="$(basename "${lib}")"
+
+              case "${base}" in
+                libc.so.*|ld-linux-x86-64.so.*|libpthread.so.*|libdl.so.*|libm.so.*|librt.so.*|libutil.so.*|libresolv.so.*|libgcc_s.so.*|libstdc++.so.*)
+                  continue
+                  ;;
+              esac
+
+              cp -nL "${lib}" "${NATIVE_LIB_DIR}/" || true
+            done < <(ldd "${sofile}" | awk '/=> \// {print $3}')
+          done < <(find "${PORTABLE_DIR}/python" -type f -name "*.so" | sort)
+
+          echo "Librerías nativas copiadas:"
+          find "${NATIVE_LIB_DIR}" -type f -maxdepth 1 -print | sort || true
+
+      - name: Create launcher scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > "${PORTABLE_NAME}/run-python.sh" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+          export PYTHONNOUSERSITE=1
+          export LD_LIBRARY_PATH="${BASE_DIR}/native-libs:${BASE_DIR}/python/lib:${LD_LIBRARY_PATH:-}"
+
+          exec "${BASE_DIR}/python/bin/python3" "$@"
+          SH
+
+          cat > "${PORTABLE_NAME}/run-pip.sh" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+          export PYTHONNOUSERSITE=1
+          export LD_LIBRARY_PATH="${BASE_DIR}/native-libs:${BASE_DIR}/python/lib:${LD_LIBRARY_PATH:-}"
+
+          exec "${BASE_DIR}/python/bin/python3" -m pip "$@"
+          SH
+
+          chmod +x "${PORTABLE_NAME}/run-python.sh"
+          chmod +x "${PORTABLE_NAME}/run-pip.sh"
+
+      - name: Smoke test imports
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > smoke_test.py <<'PY'
+          modules = [
+              "jinja2",
+              "pymssql",
+              "mysql.connector",
+              "fastapi",
+              "dictor",
+              "sqlalchemy",
+              "requests",
+              "cryptography",
+              "dateutil",
+              "dotenv",
+              "jenkins",
+              "yaml",
+              "pytz",
+              "pydantic",
+              "pyodbc",
+              "psycopg2",
+          ]
+
+          failed = []
+
+          for module in modules:
+              try:
+                  __import__(module)
+                  print(f"OK import {module}")
+              except Exception as exc:
+                  failed.append((module, repr(exc)))
+
+          if failed:
+              print("Import failures:")
+              for module, error in failed:
+                  print(f" - {module}: {error}")
+              raise SystemExit(1)
+
+          print("Smoke test OK")
+          PY
+
+          "./${PORTABLE_NAME}/run-python.sh" smoke_test.py
+
+      - name: Generate portable manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "Portable name: ${PORTABLE_NAME}"
+            echo "Python minor requested: ${PYTHON_MINOR}"
+            echo "python-build-standalone release: ${PBS_RELEASE}"
+            echo "Platform: ${PLATFORM}"
+            echo
+            echo "Python version:"
+            "./${PORTABLE_NAME}/run-python.sh" --version
+            echo
+            echo "Python executable:"
+            "./${PORTABLE_NAME}/run-python.sh" -c "import sys; print(sys.executable)"
+            echo
+            echo "Python prefix:"
+            "./${PORTABLE_NAME}/run-python.sh" -c "import sys; print(sys.prefix)"
+            echo
+            echo "Installed packages:"
+            "./${PORTABLE_NAME}/run-pip.sh" freeze
+          } > "${PORTABLE_NAME}/MANIFEST.txt"
+
+          cat "${PORTABLE_NAME}/MANIFEST.txt"
+
+      - name: Package portable
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tar -czf "${PORTABLE_NAME}.tar.gz" "${PORTABLE_NAME}"
+          sha256sum "${PORTABLE_NAME}.tar.gz" | tee "${PORTABLE_NAME}.tar.gz.sha256"
+
+          ls -lh "${PORTABLE_NAME}.tar.gz" "${PORTABLE_NAME}.tar.gz.sha256"
+
+      - name: Upload GitHub artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PORTABLE_NAME }}
+          path: |
+            ${{ env.PORTABLE_NAME }}.tar.gz
+            ${{ env.PORTABLE_NAME }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,30 @@
+name: Use portable Python
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_TAG: "release/protable-py"
+  ASSET_NAME: "portable-python.zip"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download portable Python
+        run: |
+          gh release download "${RELEASE_TAG}" --pattern "${ASSET_NAME}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Unpack
+        run: |
+          unzip -o "${ASSET_NAME}"
+          chmod +x portable-python/bin/python
+
+      - name: Run script with portable Python
+        run: |
+          ./portable-python/bin/python -c "import sys; print(sys.version)"
