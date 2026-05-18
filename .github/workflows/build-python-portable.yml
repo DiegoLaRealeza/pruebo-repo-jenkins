@@ -241,9 +241,6 @@ jobs:
           echo "Artifact generado:"
           ls -lh "$ARTIFACT_FILE"
 
-          echo "Contenido parcial del artifact:"
-          tar -tzf "$ARTIFACT_FILE" | head -50
-
       - name: Subir artifact
         uses: actions/upload-artifact@v4
         with:
