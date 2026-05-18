@@ -1,4 +1,4 @@
-name: Build portable Python environment
+name: Build portable Python DS
 
 on:
   workflow_dispatch:   # ejecución manual por ahora

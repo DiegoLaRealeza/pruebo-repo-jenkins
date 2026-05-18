@@ -1,4 +1,4 @@
-name: Build Python Portable
+name: Build Python Portable KM
 
 on:
   push:
