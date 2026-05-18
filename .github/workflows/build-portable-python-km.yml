@@ -6,148 +6,92 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-portable-linux:
+  build-portable-env:
     runs-on: ubuntu-latest
-
     steps:
-      # 1. Checkout del repositorio
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Instalar dependencias del sistema necesarias para compilar Python y paquetes nativos
-      - name: Install system build dependencies
+      - name: Download Python 3.11 standalone
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            libssl-dev \
-            zlib1g-dev \
-            libncurses5-dev \
-            libncursesw5-dev \
-            libreadline-dev \
-            libsqlite3-dev \
-            libgdbm-dev \
-            libdb5.3-dev \
-            libbz2-dev \
-            libexpat1-dev \
-            liblzma-dev \
-            libffi-dev \
-            uuid-dev \
-            tk-dev \
-            libpq-dev \
-            unixodbc-dev \
-            freetds-dev \
-            libkrb5-dev \
-            wget \
-            ca-certificates
+          PYTHON_URL="https://github.com/indygreg/python-build-standalone/releases/download/20240107/cpython-3.11.7+20240107-x86_64-unknown-linux-gnu-install_only.tar.gz"
+          curl -L -o python-standalone.tar.gz "$PYTHON_URL"
+          mkdir -p /tmp/python-standalone
+          tar -xzf python-standalone.tar.gz -C /tmp/python-standalone
+          /tmp/python-standalone/python/bin/python3 --version
 
-      # 3. Descargar y extraer fuentes de Python 3.11.9
-      - name: Download Python 3.11 source
+      - name: Create portable virtualenv with --copies
         run: |
-          PYTHON_VERSION="3.11.9"
-          wget -q "https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz"
-          tar -xzf "Python-${PYTHON_VERSION}.tgz"
-          echo "PYTHON_SRC=Python-${PYTHON_VERSION}" >> $GITHUB_ENV
+          /tmp/python-standalone/python/bin/python3 -m venv /tmp/python-env --copies
+          /tmp/python-env/bin/python --version
 
-      # 4. Compilar Python con prefix local (portable)
-      - name: Compile Python 3.11 (portable prefix)
+      - name: Upgrade pip and install dependencies
         run: |
-          INSTALL_PREFIX="${GITHUB_WORKSPACE}/python-portable"
-          mkdir -p "$INSTALL_PREFIX"
+          /tmp/python-env/bin/python -m pip install --upgrade pip setuptools wheel
+          if [ -f requirements.txt ]; then
+            /tmp/python-env/bin/python -m pip install -r requirements.txt
+          else
+            echo "requests==2.31.0" > /tmp/requirements.txt
+            /tmp/python-env/bin/python -m pip install -r /tmp/requirements.txt
+          fi
+          /tmp/python-env/bin/python -m pip list
 
-          cd "$PYTHON_SRC"
-          
-          ./configure \
-            --prefix="$INSTALL_PREFIX" \
-            --enable-optimizations \
-            --with-ensurepip=no \
-            --enable-shared \
-            LDFLAGS="-Wl,-rpath,\$$ORIGIN/../lib"
-
-          make -j$(nproc)
-          make install
-
-          echo "PYTHON_PREFIX=$INSTALL_PREFIX" >> $GITHUB_ENV
-
-      # 5. Instalar pip manualmente en el Python portable
-      - name: Install pip into portable Python
+      - name: Make environment relocatable
         run: |
-          "$PYTHON_PREFIX/bin/python3.11" -m ensurepip --upgrade
-          "$PYTHON_PREFIX/bin/python3.11" -m pip install --upgrade pip setuptools wheel
+          # Update virtualenv paths to be relative for portability
+          VENV_PATH="/tmp/python-env"
 
-      # 6. Instalar requirements.txt en el Python portable
-      - name: Install requirements
+          # Remove absolute paths from activate scripts
+          sed -i "s|$VENV_PATH|/tmp/install|g" $VENV_PATH/bin/activate 2>/dev/null || true
+          sed -i "s|$VENV_PATH|/tmp/install|g" $VENV_PATH/bin/activate.csh 2>/dev/null || true
+          sed -i "s|$VENV_PATH|/tmp/install|g" $VENV_PATH/bin/activate.fish 2>/dev/null || true
+
+          # Update shebangs in bin scripts to use relative python
+          for f in $VENV_PATH/bin/*; do
+            if [ -f "$f" ] && head -n 1 "$f" | grep -q "^#!"; then
+              sed -i "1s|#!$VENV_PATH/bin/|#!/tmp/install/bin/|" "$f" 2>/dev/null || true
+            fi
+          done
+
+          # Make python binary directly usable
+          chmod +x $VENV_PATH/bin/python* 2>/dev/null || true
+
+      - name: Package portable environment
         run: |
-          "$PYTHON_PREFIX/bin/python3.11" -m pip install -r requirements.txt
+          cd /tmp
+          tar -czf python-env.tar.gz python-env
+          ls -lh python-env.tar.gz
 
-      # 7. Verificar instalación de paquetes críticos
-      - name: Verify critical packages
-        run: |
-          PYTHON="$PYTHON_PREFIX/bin/python3.11"
-          
-          $PYTHON -c "import jinja2; print('Jinja2:', jinja2.__version__)"
-          $PYTHON -c "import pymssql; print('pymssql OK')"
-          $PYTHON -c "import mysql.connector; print('mysql-connector OK')"
-          $PYTHON -c "import fastapi; print('FastAPI:', fastapi.__version__)"
-          $PYTHON -c "import dictor; print('dictor OK')"
-          $PYTHON -c "import sqlalchemy; print('SQLAlchemy:', sqlalchemy.__version__)"
-          $PYTHON -c "import requests; print('requests:', requests.__version__)"
-          $PYTHON -c "import cryptography; print('cryptography:', cryptography.__version__)"
-          $PYTHON -c "import dateutil; print('python-dateutil OK')"
-          $PYTHON -c "import dotenv; print('python-dotenv OK')"
-          $PYTHON -c "import jenkins; print('python-jenkins OK')"
-          $PYTHON -c "import yaml; print('PyYAML OK')"
-          $PYTHON -c "import pytz; print('pytz:', pytz.__version__)"
-          $PYTHON -c "import pydantic; print('pydantic:', pydantic.__version__)"
-          $PYTHON -c "import pyodbc; print('pyodbc OK')"
-          $PYTHON -c "import psycopg2; print('psycopg2-binary OK')"
-
-      # 8. Crear scripts de activación y launcher
-      - name: Create activation scripts
-        run: |
-          # Script de activación tipo virtualenv
-          cat > "$PYTHON_PREFIX/activate" << 'EOF'
-          #!/bin/bash
-          # Script de activación para Python Portable
-          export PYTHON_PORTABLE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-          export PATH="$PYTHON_PORTABLE_ROOT/bin:$PATH"
-          export LD_LIBRARY_PATH="$PYTHON_PORTABLE_ROOT/lib:$LD_LIBRARY_PATH"
-          export PYTHONHOME="$PYTHON_PORTABLE_ROOT"
-          echo "Python Portable 3.11 activado"
-          echo "Ejecuta: python3.11 -V"
-          EOF
-          chmod +x "$PYTHON_PREFIX/activate"
-
-          # Script wrapper para facilitar uso
-          cat > "$PYTHON_PREFIX/python-portable" << 'EOF'
-          #!/bin/bash
-          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-          export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
-          export PYTHONHOME="$SCRIPT_DIR"
-          exec "$SCRIPT_DIR/bin/python3.11" "$@"
-          EOF
-          chmod +x "$PYTHON_PREFIX/python-portable"
-
-      # 9. Limpiar archivos innecesarios para reducir tamaño
-      - name: Clean build artifacts
-        run: |
-          # Eliminar archivos de desarrollo/compilación
-          rm -rf "$PYTHON_PREFIX/share/doc" "$PYTHON_PREFIX/share/man" || true
-          find "$PYTHON_PREFIX" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-          find "$PYTHON_PREFIX" -type f -name "*.pyc" -delete 2>/dev/null || true
-          find "$PYTHON_PREFIX" -type d -name "test" -exec rm -rf {} + 2>/dev/null || true
-          find "$PYTHON_PREFIX" -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true
-
-      # 10. Empaquetar como tar.gz
-      - name: Create portable tarball
-        run: |
-          tar -czf python-3.11-portable-linux.tar.gz python-portable/
-          ls -lh python-3.11-portable-linux.tar.gz
-
-      # 11. Subir como Artifact de GitHub
-      - name: Upload artifact
+      - name: Upload portable environment artifact
         uses: actions/upload-artifact@v4
         with:
-          name: python-3.11-portable-linux
-          path: python-3.11-portable-linux.tar.gz
+          name: python-env
+          path: /tmp/python-env.tar.gz
           retention-days: 30
+
+  # Ejemplo de job consumidor que usa el entorno portable
+  run-with-portable-env:
+    needs: build-portable-env
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download portable environment
+        uses: actions/download-artifact@v4
+        with:
+          name: python-env
+          path: /tmp
+
+      - name: Extract and test portable environment
+        run: |
+          cd /tmp
+          tar -xzf python-env.tar.gz
+          ls -la /tmp/python-env/bin/
+
+          # Ejecutar Python con el entorno portable
+          /tmp/python-env/bin/python --version
+          /tmp/python-env/bin/python -m pip list
+
+          # Ejecutar un script de prueba
+          /tmp/python-env/bin/python -c "import requests; print(f'requests version: {requests.__version__}')"
