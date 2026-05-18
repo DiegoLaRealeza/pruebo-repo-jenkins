@@ -15,7 +15,7 @@ jobs:
         run: |
           curl -L -o python-standalone.tar.gz \
             "https://github.com/indygreg/python-build-standalone/releases/download/20240107/cpython-3.11.7+20240107-x86_64-unknown-linux-gnu-install_only.tar.gz"
-          tar -xzf python-standalone.tar.gz
+          tar -xzf cpython-3.11.7+20240107-x86_64-unknown-linux-gnu-install_only.tar.gz
           # El directorio extraído tiene un nombre como "python" o similar
           # En este caso, el nombre será "cpython-3.11.7+20240107-x86_64-unknown-linux-gnu-install_only"
           EXTRACTED_DIR=$(find . -maxdepth 1 -type d -name "cpython-*" | head -1)
@@ -24,7 +24,6 @@ jobs:
             exit 1
           fi
           mv "$EXTRACTED_DIR" python
-          rm python-standalone.tar.gz
           echo "📂 Python standalone listo en ./python"
 
       - name: Crear virtualenv portable (con --copies)
