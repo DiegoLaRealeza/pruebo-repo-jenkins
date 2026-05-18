@@ -5,10 +5,20 @@ on:
   push:
     branches: [main, master]
 
+env:
+  PYTHON_STANDALONE_URL: "https://github.com/indygreg/python-build-standalone/releases/download/20240107/cpython-3.11.7+20240107-x86_64-unknown-linux-gnu-install_only.tar.gz"
+
+  BOOTSTRAP_PIP_VERSION: "26.1.1"
+  BOOTSTRAP_SETUPTOOLS_VERSION: "80.9.0"
+  BOOTSTRAP_WHEEL_VERSION: "0.45.1"
+
+  ARTIFACT_NAME: "python-env"
+  ARTIFACT_FILE: "python-env.tar.gz"
+
 jobs:
   build:
     name: Build portable Python
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout repositorio
@@ -24,16 +34,36 @@ jobs:
             echo 'requests==2.31.0' > requirements.txt
           fi
 
+          if grep -Eq '^[[:space:]]*Jrequests[[:space:]]*==' requirements.txt; then
+            echo "ERROR: requirements.txt contiene 'Jrequests'. Debe ser 'requests==2.31.0'."
+            exit 1
+          fi
+
           echo "Contenido de requirements.txt:"
           cat requirements.txt
+
+      - name: Asegurar jq
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y jq
+          fi
+
+          jq --version
 
       - name: Descargar y extraer Python standalone
         shell: bash
         run: |
           set -euo pipefail
 
-          curl -L -o python-standalone.tar.gz \
-            "https://github.com/indygreg/python-build-standalone/releases/download/20240107/cpython-3.11.7+20240107-x86_64-unknown-linux-gnu-install_only.tar.gz"
+          rm -rf python portable_env python-standalone.tar.gz
+
+          curl -fSL --retry 3 --retry-delay 2 \
+            -o python-standalone.tar.gz \
+            "$PYTHON_STANDALONE_URL"
 
           tar -xzf python-standalone.tar.gz
 
@@ -48,41 +78,140 @@ jobs:
             mv "$EXTRACTED_DIR" python
           fi
 
-          rm python-standalone.tar.gz
+          rm -f python-standalone.tar.gz
 
-          echo "Python standalone listo."
+          echo "Python standalone extraído correctamente."
+          ./python/bin/python3.11 --version
 
-      - name: Crear entorno portable con wrappers
+      - name: Crear directorio portable
         shell: bash
         run: |
           set -euo pipefail
 
           mkdir -p portable_env
-          cp -r python/* portable_env/
+          cp -a python/. portable_env/
 
-          curl -sS https://bootstrap.pypa.io/get-pip.py -o get-pip.py
-          ./portable_env/bin/python3.11 get-pip.py --no-setuptools --no-wheel
-          rm get-pip.py
+          echo "Validando Python portable base:"
+          ./portable_env/bin/python3.11 --version
 
-          rm -f portable_env/bin/pip portable_env/bin/pip3 portable_env/bin/pip3.11
+      - name: Descargar wheels bootstrap de pip
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf bootstrap-wheels
+          mkdir -p bootstrap-wheels
+
+          download_pypi_wheel() {
+            PACKAGE_NAME="$1"
+            PACKAGE_VERSION="$2"
+
+            JSON_FILE="bootstrap-wheels/${PACKAGE_NAME}-${PACKAGE_VERSION}.json"
+
+            echo "Resolviendo wheel para ${PACKAGE_NAME}==${PACKAGE_VERSION}"
+
+            curl -fSL --retry 3 --retry-delay 2 \
+              -o "$JSON_FILE" \
+              "https://pypi.org/pypi/${PACKAGE_NAME}/${PACKAGE_VERSION}/json"
+
+            WHEEL_URL="$(
+              jq -r '
+                .urls[]
+                | select(.packagetype == "bdist_wheel")
+                | select(.filename | endswith("py3-none-any.whl"))
+                | .url
+              ' "$JSON_FILE" | head -1
+            )"
+
+            if [ -z "$WHEEL_URL" ] || [ "$WHEEL_URL" = "null" ]; then
+              echo "ERROR: No se encontró wheel py3-none-any para ${PACKAGE_NAME}==${PACKAGE_VERSION}"
+              exit 1
+            fi
+
+            WHEEL_FILE="$(basename "$WHEEL_URL")"
+
+            echo "Descargando $WHEEL_FILE"
+
+            curl -fSL --retry 3 --retry-delay 2 \
+              -o "bootstrap-wheels/$WHEEL_FILE" \
+              "$WHEEL_URL"
+          }
+
+          download_pypi_wheel "pip" "$BOOTSTRAP_PIP_VERSION"
+          download_pypi_wheel "setuptools" "$BOOTSTRAP_SETUPTOOLS_VERSION"
+          download_pypi_wheel "wheel" "$BOOTSTRAP_WHEEL_VERSION"
+
+          echo "Wheels bootstrap descargados:"
+          ls -lh bootstrap-wheels/*.whl
+
+      - name: Instalar pip desde wheel bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PIP_BOOTSTRAP_WHEEL="$(find bootstrap-wheels -type f -name "pip-${BOOTSTRAP_PIP_VERSION}-py3-none-any.whl" | head -1)"
+
+          if [ -z "$PIP_BOOTSTRAP_WHEEL" ]; then
+            echo "ERROR: No se encontró el wheel bootstrap de pip."
+            exit 1
+          fi
+
+          echo "Usando wheel bootstrap:"
+          echo "$PIP_BOOTSTRAP_WHEEL"
+
+          PYTHONPATH="$PWD/$PIP_BOOTSTRAP_WHEEL" \
+            ./portable_env/bin/python3.11 -m pip install \
+              --no-index \
+              --find-links "$PWD/bootstrap-wheels" \
+              "pip==$BOOTSTRAP_PIP_VERSION" \
+              "setuptools==$BOOTSTRAP_SETUPTOOLS_VERSION" \
+              "wheel==$BOOTSTRAP_WHEEL_VERSION"
+
+          echo "pip instalado dentro de portable_env:"
+          ./portable_env/bin/python3.11 -m pip --version
+
+      - name: Instalar dependencias del proyecto
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ./portable_env/bin/python3.11 -m pip install -r requirements.txt
+
+          echo "Validando dependencias:"
+          ./portable_env/bin/python3.11 -m pip check
+          ./portable_env/bin/python3.11 -m pip list
+
+      - name: Crear wrappers portables finales
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -f portable_env/bin/pip
+          rm -f portable_env/bin/pip3
+          rm -f portable_env/bin/pip3.11
+          rm -f portable_env/bin/python
 
           cat > portable_env/bin/pip << 'EOF'
-
+          #!/bin/sh
           DIR="$(cd "$(dirname "$0")" && pwd)"
           exec "$DIR/python3.11" -m pip "$@"
           EOF
 
           cat > portable_env/bin/pip3 << 'EOF'
+          #!/bin/sh
           DIR="$(cd "$(dirname "$0")" && pwd)"
           exec "$DIR/python3.11" -m pip "$@"
           EOF
 
           cat > portable_env/bin/pip3.11 << 'EOF'
+          #!/bin/sh
           DIR="$(cd "$(dirname "$0")" && pwd)"
           exec "$DIR/python3.11" -m pip "$@"
           EOF
 
-          chmod +x portable_env/bin/pip portable_env/bin/pip3 portable_env/bin/pip3.11
+          chmod +x portable_env/bin/pip
+          chmod +x portable_env/bin/pip3
+          chmod +x portable_env/bin/pip3.11
 
           cd portable_env/bin
           ln -sf python3.11 python
@@ -90,31 +219,16 @@ jobs:
 
           echo "Wrappers portables creados."
 
-      - name: Verificar entorno localmente
+      - name: Validar entorno portable antes de empaquetar
         shell: bash
         run: |
           set -euo pipefail
 
           ./portable_env/bin/python --version
           ./portable_env/bin/pip --version
-          ./portable_env/bin/pip list
-
-      - name: Instalar dependencias
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ./portable_env/bin/pip install --upgrade pip
-          ./portable_env/bin/pip install -r requirements.txt
-
-      - name: Verificar dependencias instaladas
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ./portable_env/bin/pip list
           ./portable_env/bin/pip check
 
+          ./portable_env/bin/python -c "import sys; print('Python executable:', sys.executable)"
           ./portable_env/bin/python -c "import requests; print('requests version:', requests.__version__)"
 
       - name: Empaquetar entorno portable
@@ -122,28 +236,32 @@ jobs:
         run: |
           set -euo pipefail
 
-          tar -czf python-env.tar.gz portable_env/
+          tar -czf "$ARTIFACT_FILE" portable_env/
 
           echo "Artifact generado:"
-          ls -lh python-env.tar.gz
+          ls -lh "$ARTIFACT_FILE"
+
+          echo "Contenido parcial del artifact:"
+          tar -tzf "$ARTIFACT_FILE" | head -50
 
       - name: Subir artifact
         uses: actions/upload-artifact@v4
         with:
-          name: python-env
-          path: python-env.tar.gz
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.ARTIFACT_FILE }}
           retention-days: 7
+          if-no-files-found: error
 
   verify:
     name: Verify portable Python
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     needs: build
 
     steps:
       - name: Descargar artifact
         uses: actions/download-artifact@v4
         with:
-          name: python-env
+          name: ${{ env.ARTIFACT_NAME }}
           path: ./downloaded-env
 
       - name: Validar entorno portable
@@ -154,7 +272,7 @@ jobs:
           rm -rf /tmp/install
           mkdir -p /tmp/install
 
-          tar -xzf ./downloaded-env/python-env.tar.gz -C /tmp/install
+          tar -xzf "./downloaded-env/$ARTIFACT_FILE" -C /tmp/install
 
           PYTHON_BIN="/tmp/install/portable_env/bin/python"
           PIP_BIN="/tmp/install/portable_env/bin/pip"
