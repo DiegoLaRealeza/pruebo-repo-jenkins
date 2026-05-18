@@ -1,0 +1,46 @@
+name: Build portable Python (manual)
+
+on:
+  workflow_dispatch:   # solo ejecución manual desde la UI de GitHub
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout código (rama principal)
+        uses: actions/checkout@v4
+        with:
+          ref: main   # o la rama donde tengas el requirements.txt
+
+      - name: Instalar zstd
+        run: sudo apt-get update && sudo apt-get install -y zstd
+
+      - name: Descargar Python standalone 3.11.12
+        run: |
+          wget -q https://github.com/indygreg/python-build-standalone/releases/download/20250416/cpython-3.11.12+20250416-x86_64-unknown-linux-gnu-pgo-full.tar.zst -O python.tar.zst
+
+      - name: Extraer y preparar directorio portable
+        run: |
+          mkdir -p portable/install
+          tar --zstd -xf python.tar.zst
+          mv python/* portable/install/
+          rm python.tar.zst
+
+      - name: Crear virtualenv e instalar dependencias
+        run: |
+          portable/install/bin/python3 -m venv --copies portable/install/venv
+          source portable/install/venv/bin/activate
+          pip install --no-cache-dir -r requirements.txt
+          deactivate
+
+      - name: Empaquetar
+        run: |
+          tar czf python-env.tar.gz -C portable install
+          echo "Paquete generado:"
+          ls -lh python-env.tar.gz
+
+      - name: Upload GitHub artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-python
+          path: python-env.tar.gz
