@@ -39,9 +39,7 @@ jobs:
 
           if [ ! -f requirements.txt ]; then
             echo "requirements.txt not found. Creating default requirements.txt"
-            cat > requirements.txt <<'EOF'
-            requests==2.31.0
-            EOF
+            echo 'requests==2.31.0' > requirements.txt
           fi
 
           echo "requirements.txt content:"
