@@ -1,4 +1,4 @@
-name: Build Python Portable
+name: Build Python Portable cgpt
 
 on:
   workflow_dispatch:

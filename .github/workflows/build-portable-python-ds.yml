@@ -1,4 +1,4 @@
-name: Build portable Python (manual)
+name: Build portable Python ds
 
 on:
   workflow_dispatch:   # solo ejecución manual desde la UI de GitHub
