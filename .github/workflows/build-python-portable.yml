@@ -12,11 +12,6 @@ on:
         required: true
         default: "20260510"
 
-  push:
-    paths:
-      - "requirements.txt"
-      - ".github/workflows/build-python-portable.yml"
-
 permissions:
   contents: read
 
