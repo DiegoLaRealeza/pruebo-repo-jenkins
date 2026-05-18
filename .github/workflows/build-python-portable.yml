@@ -2,378 +2,171 @@ name: Build Python Portable cgpt
 
 on:
   workflow_dispatch:
-    inputs:
-      python_minor:
-        description: "Version menor de Python a usar"
-        required: true
-        default: "3.11"
-      pbs_release:
-        description: "Release tag de astral-sh/python-build-standalone"
-        required: true
-        default: "20260510"
-
-permissions:
-  contents: read
-
-env:
-  PYTHON_MINOR: ${{ github.event.inputs.python_minor || '3.11' }}
-  PBS_RELEASE: ${{ github.event.inputs.pbs_release || '20260510' }}
-  PLATFORM: x86_64-unknown-linux-gnu
-
-  INSTALL_ROOT: /tmp/install
-  PORTABLE_DIR: /tmp/install/python-env
-  PYTHON_BASE: /tmp/install/python-env/python
-  VENV_DIR: /tmp/install/python-env/venv
-  PYTHON_CMD: /tmp/install/python-env/bin/python
-  PIP_CMD: /tmp/install/python-env/bin/pip
-
-  ARTIFACT_NAME: python-env-linux-x86_64
-  ARTIFACT_FILE: python-env.tar.gz
+  push:
+    branches: [main, master]
 
 jobs:
-  build-python-portable:
-    name: Build Python portable
-    runs-on: ubuntu-22.04
+  build:
+    name: Build portable Python
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repositorio
         uses: actions/checkout@v4
 
-      - name: Create requirements.txt if missing
+      - name: Validar requirements.txt
         shell: bash
         run: |
           set -euo pipefail
 
           if [ ! -f requirements.txt ]; then
-            echo "requirements.txt not found. Creating default requirements.txt"
+            echo "requirements.txt no existe. Creando requirements.txt por defecto."
             echo 'requests==2.31.0' > requirements.txt
           fi
 
-          if grep -Eq '^[[:space:]]*Jrequests[[:space:]]*==' requirements.txt; then
-            echo "ERROR: requirements.txt contains 'Jrequests'. Use 'requests==2.31.0'."
-            exit 1
-          fi
-
-          echo "requirements.txt content:"
+          echo "Contenido de requirements.txt:"
           cat requirements.txt
 
-      - name: Ensure jq is available
+      - name: Descargar y extraer Python standalone
         shell: bash
         run: |
           set -euo pipefail
 
-          if ! command -v jq >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y jq
-          fi
+          curl -L -o python-standalone.tar.gz \
+            "https://github.com/indygreg/python-build-standalone/releases/download/20240107/cpython-3.11.7+20240107-x86_64-unknown-linux-gnu-install_only.tar.gz"
 
-          jq --version
+          tar -xzf python-standalone.tar.gz
 
-      - name: Resolve python-build-standalone asset
-        shell: bash
-        run: |
-          set -euo pipefail
+          EXTRACTED_DIR="$(find . -maxdepth 1 -type d \( -name "python" -o -name "cpython-*" \) | head -1)"
 
-          RELEASE_API_URL="https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/${PBS_RELEASE}"
-
-          echo "Resolving Python standalone release:"
-          echo "$RELEASE_API_URL"
-
-          curl -fsSL \
-            -H "Accept: application/vnd.github+json" \
-            "$RELEASE_API_URL" \
-            -o release.json
-
-          ASSETS_URL="$(jq -r '.assets_url' release.json)"
-
-          if [ -z "$ASSETS_URL" ] || [ "$ASSETS_URL" = "null" ]; then
-            echo "ERROR: assets_url not found in release response."
-            cat release.json
+          if [ -z "$EXTRACTED_DIR" ]; then
+            echo "ERROR: No se encontró el directorio extraído."
             exit 1
           fi
 
-          : > assets.jsonl
-
-          PAGE=1
-
-          while true; do
-            PAGE_FILE="assets-page-${PAGE}.json"
-
-            curl -fsSL \
-              -H "Accept: application/vnd.github+json" \
-              "${ASSETS_URL}?per_page=100&page=${PAGE}" \
-              -o "$PAGE_FILE"
-
-            COUNT="$(jq 'length' "$PAGE_FILE")"
-
-            if [ "$COUNT" -eq 0 ]; then
-              break
-            fi
-
-            jq -c '.[]' "$PAGE_FILE" >> assets.jsonl
-
-            if [ "$COUNT" -lt 100 ]; then
-              break
-            fi
-
-            PAGE=$((PAGE + 1))
-          done
-
-          PREFIX="cpython-${PYTHON_MINOR}."
-          SUFFIX="+${PBS_RELEASE}-${PLATFORM}-install_only.tar.gz"
-
-          ASSET_NAME="$(
-            jq -r \
-              --arg prefix "$PREFIX" \
-              --arg suffix "$SUFFIX" \
-              'select(.name | startswith($prefix) and endswith($suffix)) | .name' \
-              assets.jsonl \
-            | sort -V \
-            | tail -n 1
-          )"
-
-          if [ -z "$ASSET_NAME" ] || [ "$ASSET_NAME" = "null" ]; then
-            echo "ERROR: No matching python-build-standalone asset found."
-            echo "Expected prefix: $PREFIX"
-            echo "Expected suffix: $SUFFIX"
-            echo
-            echo "Similar assets:"
-            jq -r \
-              --arg py "$PYTHON_MINOR" \
-              --arg platform "$PLATFORM" \
-              'select(.name | contains("cpython-" + $py + ".") and contains($platform) and contains("install_only")) | .name' \
-              assets.jsonl \
-            | sort -V \
-            | head -50
-            exit 1
+          if [ "$EXTRACTED_DIR" != "./python" ]; then
+            mv "$EXTRACTED_DIR" python
           fi
 
-          ASSET_URL="$(
-            jq -r \
-              --arg name "$ASSET_NAME" \
-              'select(.name == $name) | .browser_download_url' \
-              assets.jsonl \
-            | head -n 1
-          )"
+          rm python-standalone.tar.gz
 
-          if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" = "null" ]; then
-            echo "ERROR: browser_download_url not found for asset: $ASSET_NAME"
-            exit 1
-          fi
+          echo "Python standalone listo."
 
-          echo "ASSET_NAME=$ASSET_NAME" >> "$GITHUB_ENV"
-          echo "ASSET_URL=$ASSET_URL" >> "$GITHUB_ENV"
-
-          echo "Resolved asset:"
-          echo "$ASSET_NAME"
-          echo "$ASSET_URL"
-
-      - name: Download and install standalone Python into portable directory
+      - name: Crear entorno portable con wrappers
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -rf "$INSTALL_ROOT"
-          rm -rf python-standalone
-          rm -f python-standalone.tar.gz
+          mkdir -p portable_env
+          cp -r python/* portable_env/
 
-          mkdir -p "$PORTABLE_DIR"
+          curl -sS https://bootstrap.pypa.io/get-pip.py -o get-pip.py
+          ./portable_env/bin/python3.11 get-pip.py --no-setuptools --no-wheel
+          rm get-pip.py
 
-          echo "Downloading Python standalone:"
-          echo "$ASSET_URL"
+          rm -f portable_env/bin/pip portable_env/bin/pip3 portable_env/bin/pip3.11
 
-          curl -fL "$ASSET_URL" -o python-standalone.tar.gz
+          cat > portable_env/bin/pip << 'EOF'
 
-          mkdir -p python-standalone
-          tar -xzf python-standalone.tar.gz -C python-standalone
+          DIR="$(cd "$(dirname "$0")" && pwd)"
+          exec "$DIR/python3.11" -m pip "$@"
+          EOF
 
-          PYTHON_STANDALONE_BIN="$(
-            find python-standalone -path "*/bin/python3" -type f -print -quit
-          )"
+          cat > portable_env/bin/pip3 << 'EOF'
+          DIR="$(cd "$(dirname "$0")" && pwd)"
+          exec "$DIR/python3.11" -m pip "$@"
+          EOF
 
-          if [ -z "$PYTHON_STANDALONE_BIN" ]; then
-            echo "ERROR: python3 binary not found inside python-build-standalone archive."
-            find python-standalone -maxdepth 5 -type f | sort | head -100
-            exit 1
-          fi
+          cat > portable_env/bin/pip3.11 << 'EOF'
+          DIR="$(cd "$(dirname "$0")" && pwd)"
+          exec "$DIR/python3.11" -m pip "$@"
+          EOF
 
-          PYTHON_STANDALONE_HOME="$(
-            cd "$(dirname "$PYTHON_STANDALONE_BIN")/.." && pwd
-          )"
+          chmod +x portable_env/bin/pip portable_env/bin/pip3 portable_env/bin/pip3.11
 
-          echo "Standalone Python home:"
-          echo "$PYTHON_STANDALONE_HOME"
+          cd portable_env/bin
+          ln -sf python3.11 python
+          cd ../..
 
-          cp -a "$PYTHON_STANDALONE_HOME" "$PYTHON_BASE"
+          echo "Wrappers portables creados."
 
-          "$PYTHON_BASE/bin/python3" --version
-          "$PYTHON_BASE/bin/python3" -m pip --version
-
-      - name: Create virtualenv inside portable directory
+      - name: Verificar entorno localmente
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -rf "$VENV_DIR"
+          ./portable_env/bin/python --version
+          ./portable_env/bin/pip --version
+          ./portable_env/bin/pip list
 
-          "$PYTHON_BASE/bin/python3" -m venv --copies "$VENV_DIR"
-
-          "$VENV_DIR/bin/python" --version
-          "$VENV_DIR/bin/python" -m pip --version
-
-      - name: Install dependencies into portable virtualenv
+      - name: Instalar dependencias
         shell: bash
         run: |
           set -euo pipefail
 
-          "$VENV_DIR/bin/python" -m pip install --upgrade pip setuptools wheel
-          "$VENV_DIR/bin/python" -m pip install --no-cache-dir -r requirements.txt
+          ./portable_env/bin/pip install --upgrade pip
+          ./portable_env/bin/pip install -r requirements.txt
 
-          echo "Installed packages:"
-          "$VENV_DIR/bin/python" -m pip freeze
-
-          echo "Dependency consistency check:"
-          "$VENV_DIR/bin/python" -m pip check
-
-          echo "requests package info:"
-          "$VENV_DIR/bin/python" -m pip show requests
-
-      - name: Create portable bash wrappers
+      - name: Verificar dependencias instaladas
         shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p "$PORTABLE_DIR/bin"
+          ./portable_env/bin/pip list
+          ./portable_env/bin/pip check
 
-          rm -f "$PORTABLE_DIR/bin/python"
-          rm -f "$PORTABLE_DIR/bin/python3"
-          rm -f "$PORTABLE_DIR/bin/pip"
-          rm -f "$PORTABLE_DIR/bin/pip3"
+          ./portable_env/bin/python -c "import requests; print('requests version:', requests.__version__)"
 
-          {
-            echo '#!/usr/bin/env bash'
-            echo 'set -euo pipefail'
-            echo 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"'
-            echo 'exec "$SCRIPT_DIR/../venv/bin/python" "$@"'
-          } > "$PORTABLE_DIR/bin/python"
-
-          {
-            echo '#!/usr/bin/env bash'
-            echo 'set -euo pipefail'
-            echo 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"'
-            echo 'exec "$SCRIPT_DIR/../venv/bin/python" "$@"'
-          } > "$PORTABLE_DIR/bin/python3"
-
-          {
-            echo '#!/usr/bin/env bash'
-            echo 'set -euo pipefail'
-            echo 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"'
-            echo 'exec "$SCRIPT_DIR/../venv/bin/python" -m pip "$@"'
-          } > "$PORTABLE_DIR/bin/pip"
-
-          {
-            echo '#!/usr/bin/env bash'
-            echo 'set -euo pipefail'
-            echo 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"'
-            echo 'exec "$SCRIPT_DIR/../venv/bin/python" -m pip "$@"'
-          } > "$PORTABLE_DIR/bin/pip3"
-
-          chmod +x "$PORTABLE_DIR/bin/python"
-          chmod +x "$PORTABLE_DIR/bin/python3"
-          chmod +x "$PORTABLE_DIR/bin/pip"
-          chmod +x "$PORTABLE_DIR/bin/pip3"
-
-          "$PYTHON_CMD" --version
-          "$PIP_CMD" --version
-
-      - name: Validate portable environment before packaging
+      - name: Empaquetar entorno portable
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Python command:"
-          echo "$PYTHON_CMD"
+          tar -czf python-env.tar.gz portable_env/
 
-          echo "Pip command:"
-          echo "$PIP_CMD"
+          echo "Artifact generado:"
+          ls -lh python-env.tar.gz
 
-          test -x "$PYTHON_CMD"
-          test -x "$PIP_CMD"
-
-          "$PYTHON_CMD" --version
-          "$PIP_CMD" --version
-
-          "$PYTHON_CMD" -m pip check
-          "$PYTHON_CMD" -m pip show requests
-          "$PYTHON_CMD" -m pip freeze
-
-          echo "Portable directory structure:"
-          find "$PORTABLE_DIR" -maxdepth 3 -type d | sort | head -80
-
-      - name: Package portable Python environment
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd "$INSTALL_ROOT"
-
-          tar -czf "$GITHUB_WORKSPACE/$ARTIFACT_FILE" python-env
-
-          cd "$GITHUB_WORKSPACE"
-
-          echo "Generated artifact:"
-          ls -lh "$ARTIFACT_FILE"
-
-          echo "Artifact content sample:"
-          tar -tzf "$ARTIFACT_FILE" | head -80
-
-      - name: Upload portable Python artifact
+      - name: Subir artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ARTIFACT_NAME }}
-          path: ${{ env.ARTIFACT_FILE }}
-          if-no-files-found: error
+          name: python-env
+          path: python-env.tar.gz
           retention-days: 7
-          compression-level: 0
 
-  test-portable-artifact:
-    name: Test portable artifact in fresh job
-    runs-on: ubuntu-22.04
-    needs: build-python-portable
+  verify:
+    name: Verify portable Python
+    runs-on: ubuntu-latest
+    needs: build
 
     steps:
-      - name: Download portable Python artifact
+      - name: Descargar artifact
         uses: actions/download-artifact@v4
         with:
-          name: ${{ env.ARTIFACT_NAME }}
-          path: /tmp/artifact
+          name: python-env
+          path: ./downloaded-env
 
-      - name: Extract portable Python into expected path
+      - name: Validar entorno portable
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -rf "$INSTALL_ROOT"
-          mkdir -p "$INSTALL_ROOT"
+          rm -rf /tmp/install
+          mkdir -p /tmp/install
 
-          tar -xzf "/tmp/artifact/$ARTIFACT_FILE" -C "$INSTALL_ROOT"
+          tar -xzf ./downloaded-env/python-env.tar.gz -C /tmp/install
 
-          echo "Extracted portable environment:"
-          find "$PORTABLE_DIR" -maxdepth 3 -type d | sort | head -80
+          PYTHON_BIN="/tmp/install/portable_env/bin/python"
+          PIP_BIN="/tmp/install/portable_env/bin/pip"
 
-      - name: Validate portable Python from extracted artifact
-        shell: bash
-        run: |
-          set -euo pipefail
+          test -x "$PYTHON_BIN"
+          test -x "$PIP_BIN"
 
-          test -x "$PYTHON_CMD"
-          test -x "$PIP_CMD"
+          "$PYTHON_BIN" --version
+          "$PIP_BIN" --version
+          "$PIP_BIN" check
 
-          "$PYTHON_CMD" --version
-          "$PIP_CMD" --version
+          "$PYTHON_BIN" -c "import sys; print('Python executable:', sys.executable)"
+          "$PYTHON_BIN" -c "import requests; print('requests version:', requests.__version__)"
 
-          "$PYTHON_CMD" -m pip check
-          "$PYTHON_CMD" -m pip show requests
-
-          echo "Installed packages:"
-          "$PYTHON_CMD" -m pip freeze
+          echo "Verificación correcta. El entorno portable funciona en /tmp/install/portable_env."
