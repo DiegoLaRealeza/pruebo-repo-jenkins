@@ -14,17 +14,25 @@ jobs:
         run: |
           curl -L -o python-standalone.tar.gz \
             "https://github.com/indygreg/python-build-standalone/releases/download/20240107/cpython-3.11.7+20240107-x86_64-unknown-linux-gnu-install_only.tar.gz"
-          mkdir python
-          tar -xzf python-standalone.tar.gz --strip-components=1 -C python
+          tar -xzf python-standalone.tar.gz
+          # Detecta el nombre real (puede ser 'python' o 'cpython-...')
+          EXTRACTED_DIR=$(find . -maxdepth 1 -type d \( -name "python" -o -name "cpython-*" \) | head -1)
+          if [ -z "$EXTRACTED_DIR" ]; then
+            echo "Error: No se encontró el directorio extraído"
+            exit 1
+          fi
+          # Si ya se llama python, no mover; si no, renombrar
+          if [ "$EXTRACTED_DIR" != "./python" ]; then
+            mv "$EXTRACTED_DIR" python
+          fi
           rm python-standalone.tar.gz
-      - name: Verificar contenido extraído
-        run: |
-          ls -la python/
-          ls -la python/bin/ || echo "No existe python/bin"
-          find python -name "python*" -type f 2>/dev/null || echo "No se encontró ningún python"
+          echo "✅ Python standalone listo"
+          ls -la python/bin/   # Verificación opcional
+
       - name: Crear virtualenv portable
         run: |
-          ./python/bin/python -m venv --copies portable_env
+          # Usamos python3.11 porque no existe python a secas
+          ./python/bin/python3.11 -m venv --copies portable_env
 
       - name: Instalar dependencias
         run: |
