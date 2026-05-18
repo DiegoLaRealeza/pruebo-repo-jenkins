@@ -1,7 +1,7 @@
 name: Build portable Python DS
 
 on:
-  workflow_dispatch:   # ejecución manual por ahora
+  workflow_dispatch:
 
 jobs:
   build:
@@ -11,25 +11,13 @@ jobs:
       - name: Checkout repositorio (para obtener requirements.txt)
         uses: actions/checkout@v4
 
-      - name: Obtener URL de la última versión de Python 3.11 standalone (Linux x86_64)
-        id: get_python_url
+      - name: Descargar Python 3.11 standalone (versión fija)
         run: |
-          # Busca en los assets de la última release de indygreg/python-build-standalone
-          LATEST_URL=$(curl -s https://api.github.com/repos/indygreg/python-build-standalone/releases/latest | \
-            jq -r '.assets[] | select(.name | test("cpython-3\\.11\\..*-x86_64-unknown-linux-gnu-install_only\\.tar\\.gz")) | .browser_download_url' | \
-            head -1)
-          if [ -z "$LATEST_URL" ]; then
-            echo "Error: No se encontró el asset de Python 3.11 para Linux x86_64"
-            exit 1
-          fi
-          echo "url=$LATEST_URL" >> $GITHUB_OUTPUT
-          echo "✅ URL obtenida: $LATEST_URL"
-
-      - name: Descargar y extraer Python standalone
-        run: |
-          curl -L -o python-standalone.tar.gz "${{ steps.get_python_url.outputs.url }}"
+          curl -L -o python-standalone.tar.gz \
+            "https://github.com/indygreg/python-build-standalone/releases/download/20240107/cpython-3.11.7+20240107-x86_64-unknown-linux-gnu-install_only.tar.gz"
           tar -xzf python-standalone.tar.gz
-          # Renombrar el directorio extraído (tiene un nombre largo variable)
+          # El directorio extraído tiene un nombre como "python" o similar
+          # En este caso, el nombre será "cpython-3.11.7+20240107-x86_64-unknown-linux-gnu-install_only"
           EXTRACTED_DIR=$(find . -maxdepth 1 -type d -name "cpython-*" | head -1)
           if [ -z "$EXTRACTED_DIR" ]; then
             echo "Error: No se encontró el directorio extraído"
@@ -39,17 +27,20 @@ jobs:
           rm python-standalone.tar.gz
           echo "📂 Python standalone listo en ./python"
 
-      - name: Instalar dependencias dentro del Python standalone
+      - name: Crear virtualenv portable (con --copies)
         run: |
-          # Asegurar pip (ya viene incluido, pero por si acaso)
-          ./python/bin/python -m ensurepip --upgrade
-          ./python/bin/python -m pip install --upgrade pip
-          # Instalar desde requirements.txt (ej. requests==2.31.0)
-          ./python/bin/python -m pip install -r requirements.txt
+          # El Python standalone ya es portable, pero creamos un venv para aislar dependencias
+          ./python/bin/python -m venv --copies portable_env
+          echo "✅ Virtualenv creado en ./portable_env"
+
+      - name: Instalar dependencias dentro del virtualenv
+        run: |
+          ./portable_env/bin/python -m pip install --upgrade pip
+          ./portable_env/bin/python -m pip install -r requirements.txt
 
       - name: Empaquetar el entorno completo
         run: |
-          tar -czf python-env.tar.gz python/
+          tar -czf python-env.tar.gz portable_env/
           echo "📦 Artículo generado: python-env.tar.gz"
 
       - name: Subir artifact
@@ -57,4 +48,4 @@ jobs:
         with:
           name: python-env
           path: python-env.tar.gz
-          retention-days: 7       # tiempo que se conserva el artifact
+          retention-days: 7
