@@ -6,40 +6,55 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout código
+      - name: Checkout repositorio (para obtener requirements.txt)
         uses: actions/checkout@v4
 
-      - name: Instalar zstd
-        run: sudo apt-get update && sudo apt-get install -y zstd
-
-      - name: Descargar Python standalone (3.11.9)
+      - name: Obtener URL de la última versión de Python 3.11 standalone (Linux x86_64)
+        id: get_python_url
         run: |
-          wget -q https://github.com/indygreg/python-build-standalone/releases/download/20241002/cpython-3.11.9+20241002-x86_64-unknown-linux-gnu-pgo-full.tar.zst -O python.tar.zst
+          # Busca en los assets de la última release de indygreg/python-build-standalone
+          LATEST_URL=$(curl -s https://api.github.com/repos/indygreg/python-build-standalone/releases/latest | \
+            jq -r '.assets[] | select(.name | test("cpython-3\\.11\\..*-x86_64-unknown-linux-gnu-install_only\\.tar\\.gz")) | .browser_download_url' | \
+            head -1)
+          if [ -z "$LATEST_URL" ]; then
+            echo "Error: No se encontró el asset de Python 3.11 para Linux x86_64"
+            exit 1
+          fi
+          echo "url=$LATEST_URL" >> $GITHUB_OUTPUT
+          echo "✅ URL obtenida: $LATEST_URL"
 
-      - name: Extraer y preparar directorio portable
+      - name: Descargar y extraer Python standalone
         run: |
-          mkdir -p portable/install
-          tar --zstd -xf python.tar.zst
-          mv python/* portable/install/
-          rm python.tar.zst
+          curl -L -o python-standalone.tar.gz "${{ steps.get_python_url.outputs.url }}"
+          tar -xzf python-standalone.tar.gz
+          # Renombrar el directorio extraído (tiene un nombre largo variable)
+          EXTRACTED_DIR=$(find . -maxdepth 1 -type d -name "cpython-*" | head -1)
+          if [ -z "$EXTRACTED_DIR" ]; then
+            echo "Error: No se encontró el directorio extraído"
+            exit 1
+          fi
+          mv "$EXTRACTED_DIR" python
+          rm python-standalone.tar.gz
+          echo "📂 Python standalone listo en ./python"
 
-      - name: Crear virtualenv e instalar dependencias
+      - name: Instalar dependencias dentro del Python standalone
         run: |
-          portable/install/bin/python3 -m venv --copies portable/install/venv
-          source portable/install/venv/bin/activate
-          pip install --no-cache-dir -r requirements.txt
-          deactivate
+          # Asegurar pip (ya viene incluido, pero por si acaso)
+          ./python/bin/python -m ensurepip --upgrade
+          ./python/bin/python -m pip install --upgrade pip
+          # Instalar desde requirements.txt (ej. requests==2.31.0)
+          ./python/bin/python -m pip install -r requirements.txt
 
-      - name: Empaquetar entorno
+      - name: Empaquetar el entorno completo
         run: |
-          tar czf python-env.tar.gz -C portable install
-          echo "Tamaño del paquete:"
-          ls -lh python-env.tar.gz
+          tar -czf python-env.tar.gz python/
+          echo "📦 Artículo generado: python-env.tar.gz"
 
-      - name: Subir como artifact de GitHub
+      - name: Subir artifact
         uses: actions/upload-artifact@v4
         with:
-          name: python-env              # nombre fijo, sin hash
+          name: python-env
           path: python-env.tar.gz
-          retention-days: 30            # tiempo que se conserva el artifact
+          retention-days: 7       # tiempo que se conserva el artifact
