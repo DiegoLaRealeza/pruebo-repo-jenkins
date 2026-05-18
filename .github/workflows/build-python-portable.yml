@@ -73,6 +73,8 @@ jobs:
       - name: Resolve Python standalone asset URL
         id: resolve_python
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -90,13 +92,16 @@ jobs:
 
           api_url = f"https://api.github.com/repos/{repo}/releases/tags/{release}"
 
-          request = urllib.request.Request(
-              api_url,
-              headers={
-                  "Accept": "application/vnd.github+json",
-                  "User-Agent": "github-actions-python-portable-builder",
-              },
-          )
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "User-Agent": "github-actions-python-portable-builder",
+          }
+
+          token = os.environ.get("GH_TOKEN")
+          if token:
+              headers["Authorization"] = f"Bearer {token}"
+
+          request = urllib.request.Request(api_url, headers=headers)
 
           with urllib.request.urlopen(request) as response:
               data = json.load(response)
@@ -157,12 +162,40 @@ jobs:
           "${PYBIN}" -m ensurepip --upgrade
           "${PYBIN}" -m pip install --upgrade pip setuptools wheel
 
-          # --only-binary evita compilar desde source.
-          # Si no existe wheel compatible, el build debe fallar.
+          # dictor==0.1.12 no tiene wheel; solo source distribution.
+          # Se instala aparte permitiendo instalación desde source.
+          "${PYBIN}" -m pip install \
+            --no-cache-dir \
+            --no-deps \
+            "dictor==0.1.12"
+
+          # Crear un requirements temporal sin dictor.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path("requirements.txt")
+          target = Path("requirements-no-dictor.txt")
+
+          output = []
+
+          for line in source.read_text(encoding="utf-8").splitlines():
+              normalized = line.strip().lower().replace(" ", "")
+              if normalized == "dictor==0.1.12":
+                  continue
+              output.append(line)
+
+          target.write_text("\n".join(output) + "\n", encoding="utf-8")
+          PY
+
+          echo "requirements-no-dictor.txt final:"
+          cat requirements-no-dictor.txt
+
+          # El resto sí se instala solo desde wheels.
+          # Esto evita compilaciones nativas inesperadas.
           "${PYBIN}" -m pip install \
             --no-cache-dir \
             --only-binary=:all: \
-            -r requirements.txt
+            -r requirements-no-dictor.txt
 
           "${PYBIN}" -m pip check
           "${PYBIN}" -m pip freeze | tee "${PORTABLE_NAME}/requirements-freeze.txt"
@@ -192,11 +225,11 @@ jobs:
               esac
 
               cp -nL "${lib}" "${NATIVE_LIB_DIR}/" || true
-            done < <(ldd "${sofile}" | awk '/=> \// {print $3}')
+            done < <(ldd "${sofile}" 2>/dev/null | awk '/=> \// {print $3}' || true)
           done < <(find "${PORTABLE_DIR}/python" -type f -name "*.so" | sort)
 
           echo "Librerías nativas copiadas:"
-          find "${NATIVE_LIB_DIR}" -type f -maxdepth 1 -print | sort || true
+          find "${NATIVE_LIB_DIR}" -maxdepth 1 -type f -print | sort || true
 
       - name: Create launcher scripts
         shell: bash
@@ -306,7 +339,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          tar -czf "${PORTABLE_NAME}.tar.gz" "${PORTABLE_NAME}"
+          tar --sort=name --owner=0 --group=0 --numeric-owner -czf "${PORTABLE_NAME}.tar.gz" "${PORTABLE_NAME}"
           sha256sum "${PORTABLE_NAME}.tar.gz" | tee "${PORTABLE_NAME}.tar.gz.sha256"
 
           ls -lh "${PORTABLE_NAME}.tar.gz" "${PORTABLE_NAME}.tar.gz.sha256"
