@@ -6,6 +6,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repositorio
         uses: actions/checkout@v4
@@ -15,31 +16,41 @@ jobs:
           curl -L -o python-standalone.tar.gz \
             "https://github.com/indygreg/python-build-standalone/releases/download/20240107/cpython-3.11.7+20240107-x86_64-unknown-linux-gnu-install_only.tar.gz"
           tar -xzf python-standalone.tar.gz
+          # Detecta el nombre real (puede ser 'python' o 'cpython-...')
           EXTRACTED_DIR=$(find . -maxdepth 1 -type d \( -name "python" -o -name "cpython-*" \) | head -1)
           if [ -z "$EXTRACTED_DIR" ]; then
             echo "Error: No se encontró el directorio extraído"
             exit 1
           fi
+          # Si ya se llama python, no mover; si no, renombrar
           if [ "$EXTRACTED_DIR" != "./python" ]; then
             mv "$EXTRACTED_DIR" python
           fi
           rm python-standalone.tar.gz
-          echo "✅ Python standalone listo"
+          echo "✅ Python standalone listo en ./python"
 
-      - name: Crear virtualenv portable con pip manual
+      - name: Crear entorno portable manualmente (copia de Python + pip)
         run: |
-          # Crear virtualenv sin pip (porque no hay ensurepip)
-          ./python/bin/python3.11 -m venv --copies --without-pip portable_env
-          # Descargar e instalar pip manualmente
+          # Copiar todo el Python standalone al directorio portable_env
+          mkdir -p portable_env
+          cp -r python/* portable_env/
+          
+          # Instalar pip manualmente dentro del entorno copiado
           curl -sS https://bootstrap.pypa.io/get-pip.py -o get-pip.py
           ./portable_env/bin/python3.11 get-pip.py --no-setuptools --no-wheel
           rm get-pip.py
-          echo "✅ Virtualenv creado con pip instalado"
+          
+          # Crear enlace simbólico python para comodidad
+          cd portable_env/bin
+          ln -sf python3.11 python
+          cd ../..
+          
+          echo "✅ Entorno portable creado en ./portable_env"
 
       - name: Instalar dependencias
         run: |
-          ./portable_env/bin/python3.11 -m pip install --upgrade pip
-          ./portable_env/bin/python3.11 -m pip install -r requirements.txt
+          ./portable_env/bin/python -m pip install --upgrade pip
+          ./portable_env/bin/python -m pip install -r requirements.txt
 
       - name: Empaquetar entorno
         run: tar -czf python-env.tar.gz portable_env/
