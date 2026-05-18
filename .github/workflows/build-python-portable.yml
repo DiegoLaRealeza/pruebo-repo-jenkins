@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       python_minor:
-        description: "Versión menor de Python a usar"
+        description: "Version menor de Python a usar"
         required: true
         default: "3.11"
       pbs_release:
@@ -91,9 +91,6 @@ jobs:
             cat release.json
             exit 1
           fi
-
-          echo "Assets URL:"
-          echo "$ASSETS_URL"
 
           : > assets.jsonl
 
@@ -191,12 +188,11 @@ jobs:
           tar -xzf python-standalone.tar.gz -C python-standalone
 
           PYTHON_STANDALONE_BIN="$(
-            find python-standalone -path "*/bin/python3" -print -quit
+            find python-standalone -path "*/bin/python3" -type f -print -quit
           )"
 
           if [ -z "$PYTHON_STANDALONE_BIN" ]; then
             echo "ERROR: python3 binary not found inside python-build-standalone archive."
-            echo "Extracted files:"
             find python-standalone -maxdepth 5 -type f | sort | head -100
             exit 1
           fi
@@ -242,7 +238,7 @@ jobs:
           echo "requests package info:"
           "$VENV_DIR/bin/python" -m pip show requests
 
-      - name: Create portable bin wrappers
+      - name: Create portable bash wrappers
         shell: bash
         run: |
           set -euo pipefail
@@ -254,10 +250,38 @@ jobs:
           rm -f "$PORTABLE_DIR/bin/pip"
           rm -f "$PORTABLE_DIR/bin/pip3"
 
-          ln -s ../venv/bin/python "$PORTABLE_DIR/bin/python"
-          ln -s ../venv/bin/python "$PORTABLE_DIR/bin/python3"
-          ln -s ../venv/bin/pip "$PORTABLE_DIR/bin/pip"
-          ln -s ../venv/bin/pip "$PORTABLE_DIR/bin/pip3"
+          {
+            echo '#!/usr/bin/env bash'
+            echo 'set -euo pipefail'
+            echo 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"'
+            echo 'exec "$SCRIPT_DIR/../venv/bin/python" "$@"'
+          } > "$PORTABLE_DIR/bin/python"
+
+          {
+            echo '#!/usr/bin/env bash'
+            echo 'set -euo pipefail'
+            echo 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"'
+            echo 'exec "$SCRIPT_DIR/../venv/bin/python" "$@"'
+          } > "$PORTABLE_DIR/bin/python3"
+
+          {
+            echo '#!/usr/bin/env bash'
+            echo 'set -euo pipefail'
+            echo 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"'
+            echo 'exec "$SCRIPT_DIR/../venv/bin/python" -m pip "$@"'
+          } > "$PORTABLE_DIR/bin/pip"
+
+          {
+            echo '#!/usr/bin/env bash'
+            echo 'set -euo pipefail'
+            echo 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"'
+            echo 'exec "$SCRIPT_DIR/../venv/bin/python" -m pip "$@"'
+          } > "$PORTABLE_DIR/bin/pip3"
+
+          chmod +x "$PORTABLE_DIR/bin/python"
+          chmod +x "$PORTABLE_DIR/bin/python3"
+          chmod +x "$PORTABLE_DIR/bin/pip"
+          chmod +x "$PORTABLE_DIR/bin/pip3"
 
           "$PYTHON_CMD" --version
           "$PIP_CMD" --version
@@ -278,8 +302,10 @@ jobs:
 
           "$PYTHON_CMD" --version
           "$PIP_CMD" --version
+
           "$PYTHON_CMD" -m pip check
           "$PYTHON_CMD" -m pip show requests
+          "$PYTHON_CMD" -m pip freeze
 
           echo "Portable directory structure:"
           find "$PORTABLE_DIR" -maxdepth 3 -type d | sort | head -80
