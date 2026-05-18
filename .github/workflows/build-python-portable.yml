@@ -1,5 +1,3 @@
-# .github/workflows/build-python-portable.yml
-
 name: Build Python Portable
 
 on:
