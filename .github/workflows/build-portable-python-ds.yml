@@ -6,40 +6,29 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repositorio (para obtener requirements.txt)
+      - name: Checkout repositorio
         uses: actions/checkout@v4
+
       - name: Descargar y extraer Python standalone
         run: |
           curl -L -o python-standalone.tar.gz \
             "https://github.com/indygreg/python-build-standalone/releases/download/20240107/cpython-3.11.7+20240107-x86_64-unknown-linux-gnu-install_only.tar.gz"
-          
-          # Obtener el nombre del primer directorio dentro del tar
-          ROOT_DIR=$(tar -tzf python-standalone.tar.gz | head -1 | cut -d '/' -f1)
-          echo "Directorio raíz dentro del tar: $ROOT_DIR"
-          
-          tar -xzf python-standalone.tar.gz
-          mv "$ROOT_DIR" python
+          mkdir python
+          tar -xzf python-standalone.tar.gz --strip-components=1 -C python
           rm python-standalone.tar.gz
-          
-          echo "✅ Python standalone listo en ./python"
 
-      - name: Crear virtualenv portable (con --copies)
+      - name: Crear virtualenv portable
         run: |
-          # El Python standalone ya es portable, pero creamos un venv para aislar dependencias
           ./python/bin/python -m venv --copies portable_env
-          echo "✅ Virtualenv creado en ./portable_env"
 
-      - name: Instalar dependencias dentro del virtualenv
+      - name: Instalar dependencias
         run: |
           ./portable_env/bin/python -m pip install --upgrade pip
           ./portable_env/bin/python -m pip install -r requirements.txt
 
-      - name: Empaquetar el entorno completo
-        run: |
-          tar -czf python-env.tar.gz portable_env/
-          echo "📦 Artículo generado: python-env.tar.gz"
+      - name: Empaquetar entorno
+        run: tar -czf python-env.tar.gz portable_env/
 
       - name: Subir artifact
         uses: actions/upload-artifact@v4
