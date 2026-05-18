@@ -17,7 +17,11 @@ jobs:
           mkdir python
           tar -xzf python-standalone.tar.gz --strip-components=1 -C python
           rm python-standalone.tar.gz
-
+      - name: Verificar contenido extraído
+        run: |
+          ls -la python/
+          ls -la python/bin/ || echo "No existe python/bin"
+          find python -name "python*" -type f 2>/dev/null || echo "No se encontró ningún python"
       - name: Crear virtualenv portable
         run: |
           ./python/bin/python -m venv --copies portable_env
