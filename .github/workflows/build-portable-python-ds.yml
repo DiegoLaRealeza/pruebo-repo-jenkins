@@ -1,23 +1,21 @@
-name: Build portable Python ds
+name: Build portable Python environment
 
 on:
-  workflow_dispatch:   # solo ejecución manual desde la UI de GitHub
+  workflow_dispatch:   # ejecución manual por ahora
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout código (rama principal)
+      - name: Checkout código
         uses: actions/checkout@v4
-        with:
-          ref: main   # o la rama donde tengas el requirements.txt
 
       - name: Instalar zstd
         run: sudo apt-get update && sudo apt-get install -y zstd
 
-      - name: Descargar Python standalone 3.11.12
+      - name: Descargar Python standalone (3.11.9)
         run: |
-          wget -q https://github.com/indygreg/python-build-standalone/releases/download/20250416/cpython-3.11.12+20250416-x86_64-unknown-linux-gnu-pgo-full.tar.zst -O python.tar.zst
+          wget -q https://github.com/indygreg/python-build-standalone/releases/download/20241002/cpython-3.11.9+20241002-x86_64-unknown-linux-gnu-pgo-full.tar.zst -O python.tar.zst
 
       - name: Extraer y preparar directorio portable
         run: |
@@ -33,14 +31,15 @@ jobs:
           pip install --no-cache-dir -r requirements.txt
           deactivate
 
-      - name: Empaquetar
+      - name: Empaquetar entorno
         run: |
           tar czf python-env.tar.gz -C portable install
-          echo "Paquete generado:"
+          echo "Tamaño del paquete:"
           ls -lh python-env.tar.gz
 
-      - name: Upload GitHub artifact
+      - name: Subir como artifact de GitHub
         uses: actions/upload-artifact@v4
         with:
-          name: portable-python
+          name: python-env              # nombre fijo, sin hash
           path: python-env.tar.gz
+          retention-days: 30            # tiempo que se conserva el artifact
