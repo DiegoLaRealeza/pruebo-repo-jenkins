@@ -2,13 +2,13 @@ name: Build portable Python DS
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main, master]
 
 jobs:
   # JOB 1: Construir el entorno portable
   build:
     runs-on: ubuntu-latest
-    outputs:
-      artifact_name: python-env
 
     steps:
       - name: Checkout repositorio
@@ -30,9 +30,9 @@ jobs:
           rm python-standalone.tar.gz
           echo "✅ Python standalone listo"
 
-      - name: Crear entorno portable con scripts relativos
+      - name: Crear entorno portable con wrappers
         run: |
-          # Copiar todo el Python standalone
+          # Copiar Python standalone
           mkdir -p portable_env
           cp -r python/* portable_env/
           
@@ -41,34 +41,54 @@ jobs:
           ./portable_env/bin/python3.11 get-pip.py --no-setuptools --no-wheel
           rm get-pip.py
           
-          # CORRECCIÓN CRÍTICA: Hacer que los scripts pip usen rutas relativas
-          cd portable_env/bin
+          # Eliminar scripts pip originales (que tienen rutas absolutas)
+          rm -f portable_env/bin/pip portable_env/bin/pip3 portable_env/bin/pip3.11
           
-          # Reemplazar el shebang de los scripts pip para que sean relativos
-          for script in pip pip3 pip3.11; do
-            if [ -f "$script" ]; then
-              # Cambiar la primera línea de #!/ruta/absoluta a #!/usr/bin/env python3.11
-              sed -i '1s|^#!.*python.*$|#!/usr/bin/env python3.11|' "$script"
-              echo "✅ Corregido $script para usar env python3.11"
-            fi
-          done
+          # Crear wrappers portables
+          cat > portable_env/bin/pip << 'EOF'
+          #!/bin/sh
+          DIR="$(cd "$(dirname "$0")" && pwd)"
+          exec "$DIR/python3.11" -m pip "$@"
+          EOF
+          
+          cat > portable_env/bin/pip3 << 'EOF'
+          #!/bin/sh
+          DIR="$(cd "$(dirname "$0")" && pwd)"
+          exec "$DIR/python3.11" -m pip "$@"
+          EOF
+          
+          cat > portable_env/bin/pip3.11 << 'EOF'
+          #!/bin/sh
+          DIR="$(cd "$(dirname "$0")" && pwd)"
+          exec "$DIR/python3.11" -m pip "$@"
+          EOF
+          
+          chmod +x portable_env/bin/pip portable_env/bin/pip3 portable_env/bin/pip3.11
           
           # Crear enlace simbólico python
+          cd portable_env/bin
           ln -sf python3.11 python
           cd ../..
           
-          echo "✅ Entorno portable creado con scripts corregidos"
+          echo "✅ Wrappers portables creados"
 
-      - name: Verificar el entorno localmente
+      - name: Verificar entorno localmente
         run: |
-          echo "=== Prueba local del entorno ==="
+          echo "=== Prueba local ==="
           ./portable_env/bin/python --version
           ./portable_env/bin/pip --version
+          ./portable_env/bin/pip list
 
       - name: Instalar dependencias
         run: |
           ./portable_env/bin/pip install --upgrade pip
           ./portable_env/bin/pip install -r requirements.txt
+
+      - name: Verificar requests instalado
+        run: |
+          echo "=== Paquetes instalados ==="
+          ./portable_env/bin/pip list | grep requests
+          ./portable_env/bin/python -c "import requests; print(f'✅ requests {requests.__version__}')"
 
       - name: Empaquetar entorno
         run: tar -czf python-env.tar.gz portable_env/
@@ -80,11 +100,10 @@ jobs:
           path: python-env.tar.gz
           retention-days: 7
 
-  # JOB 2: Verificar que el entorno funciona correctamente
+  # JOB 2: Verificar en runner limpio
   verify:
     runs-on: ubuntu-latest
     needs: build
-    if: always()
 
     steps:
       - name: Descargar artifact
@@ -97,39 +116,63 @@ jobs:
         run: |
           mkdir -p /tmp/install
           tar -xzf ./downloaded-env/python-env.tar.gz -C /tmp/install
+          echo "=== Contenido del bin ==="
           ls -la /tmp/install/portable_env/bin/
 
-      - name: Verificar Python
+      - name: Probar Python
         run: |
           echo "=== Versión de Python ==="
           /tmp/install/portable_env/bin/python --version
 
-      - name: Verificar pip (debe funcionar ahora)
+      - name: Probar pip con wrapper
         run: |
           echo "=== Versión de pip ==="
           /tmp/install/portable_env/bin/pip --version
+          
+          echo "=== Lista de paquetes ==="
+          /tmp/install/portable_env/bin/pip list
 
-      - name: Verificar requests
+      - name: Probar requests
         run: |
-          echo "=== Verificando requests ==="
-          /tmp/install/portable_env/bin/python -c "import requests; print(f'✅ requests version: {requests.__version__}')"
+          echo "=== Probando requests ==="
+          /tmp/install/portable_env/bin/python -c "
+          import requests
+          print(f'✅ requests version: {requests.__version__}')
+          print(f'✅ requests path: {requests.__file__}')
+          "
 
-      - name: Probar script completo
+      - name: Probar con script real
         run: |
-          cat > test.py << 'EOF'
+          cat > test_script.py << 'EOF'
           import requests
           import sys
-          print(f"Python: {sys.executable}")
-          print(f"requests version: {requests.__version__}")
-          r = requests.get('https://httpbin.org/json')
-          print(f"API response status: {r.status_code}")
-          print("🎉 Todo funciona correctamente!")
+          
+          print(f"Python executable: {sys.executable}")
+          print(f"Python version: {sys.version}")
+          
+          # Test HTTP request
+          try:
+              response = requests.get('https://httpbin.org/json', timeout=5)
+              print(f"✅ HTTP request successful: {response.status_code}")
+              data = response.json()
+              print(f"✅ API response: {data['slideshow']['title']}")
+          except Exception as e:
+              print(f"❌ HTTP request failed: {e}")
+              sys.exit(1)
+          
+          print("\n🎉 Entorno portable funciona perfectamente!")
           EOF
           
-          /tmp/install/portable_env/bin/python test.py
+          /tmp/install/portable_env/bin/python test_script.py
 
       - name: Verificación exitosa
         if: success()
         run: |
           echo "🎉🎉🎉 VERIFICACIÓN EXITOSA 🎉🎉🎉"
-          echo "El entorno portable funciona perfectamente"
+          echo "El entorno portable funciona en /tmp/install"
+
+      - name: Verificación fallida
+        if: failure()
+        run: |
+          echo "❌❌❌ VERIFICACIÓN FALLIDA ❌❌❌"
+          exit 1
