@@ -3,6 +3,9 @@ name: Build Python Portable KM
 on:
   push:
     branches: [main, master]
+    paths:
+      - 'requirements.txt'
+      - '.github/workflows/build-portable-python-km.yml'
   workflow_dispatch:
 
 jobs:
