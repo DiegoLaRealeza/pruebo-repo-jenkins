@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
   push:
     branches: [main, master]
-  paths:
-    - 'requirements.txt'
-    - '.github/workflows/build-python-portable.yml'
+    paths:
+      - 'requirements.txt'
+      - '.github/workflows/build-python-portable.yml'
 
 env:
   PYTHON_STANDALONE_URL: https://github.com/indygreg/python-build-standalone/releases/download/20240107/cpython-3.11.7+20240107-x86_64-unknown-linux-gnu-install_only.tar.gz
