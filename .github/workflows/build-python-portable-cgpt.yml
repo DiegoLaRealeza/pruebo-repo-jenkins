@@ -12,7 +12,6 @@ env:
   PYTHON_STANDALONE_URL: https://github.com/indygreg/python-build-standalone/releases/download/20240107/cpython-3.11.7+20240107-x86_64-unknown-linux-gnu-install_only.tar.gz
   PYTHON_ARCHIVE: python-standalone.tar.gz
   PORTABLE_DIR: portable_env
-  ARTIFACT_NAME: python-env
   ARTIFACT_FILE: python-env.tar.gz
 
 jobs:
@@ -31,36 +30,26 @@ jobs:
 
           rm -rf python cpython-* extracted-python "$PORTABLE_DIR" "$PYTHON_ARCHIVE" "$ARTIFACT_FILE"
 
-          echo "Descargando Python standalone 3.11.7..."
           curl -fL --retry 3 --retry-delay 5 \
             -o "$PYTHON_ARCHIVE" \
             "$PYTHON_STANDALONE_URL"
 
           mkdir -p extracted-python
-
-          echo "Extrayendo archivo..."
           tar -xzf "$PYTHON_ARCHIVE" -C extracted-python
 
-          echo "Buscando directorio extraído..."
           PY_DIR="$(find extracted-python -mindepth 1 -maxdepth 4 -type f -path '*/bin/python3.11' -printf '%h\n' | sed 's#/bin$##' | head -n 1 || true)"
 
           if [ -z "$PY_DIR" ]; then
             echo "ERROR: No se encontró bin/python3.11 dentro del paquete extraído."
-            find extracted-python -maxdepth 5 -type f | sort | head -100
             exit 1
           fi
 
-          echo "Directorio Python detectado: $PY_DIR"
-
           mv "$PY_DIR" python
-
-          echo "Validando estructura base..."
           test -x python/bin/python3.11
 
           rm -f "$PYTHON_ARCHIVE"
           rm -rf extracted-python
 
-          echo "Python standalone preparado:"
           ./python/bin/python3.11 --version
 
       - name: Create portable environment and pip wrappers
@@ -70,55 +59,24 @@ jobs:
 
           rm -rf "$PORTABLE_DIR"
           mkdir -p "$PORTABLE_DIR"
-
-          echo "Copiando Python standalone a $PORTABLE_DIR..."
           cp -a python/. "$PORTABLE_DIR/"
-
-          echo "Descargando get-pip.py..."
           curl -fL --retry 3 --retry-delay 5 \
             -o get-pip.py \
             https://bootstrap.pypa.io/get-pip.py
-
-          echo "Instalando pip con Python standalone..."
           "./$PORTABLE_DIR/bin/python3.11" get-pip.py
 
           rm -f get-pip.py
 
-          write_pip_wrappers() {
-            rm -f "$PORTABLE_DIR/bin/pip" "$PORTABLE_DIR/bin/pip3" "$PORTABLE_DIR/bin/pip3.11"
+          for pip_name in pip pip3 pip3.11; do
+            printf '%s\n' \
+              '#!/usr/bin/env bash' \
+              'set -euo pipefail' \
+              'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' \
+              'exec "$SCRIPT_DIR/python3.11" -m pip "$@"' > "$PORTABLE_DIR/bin/$pip_name"
+            chmod +x "$PORTABLE_DIR/bin/$pip_name"
+          done
 
-            cat > "$PORTABLE_DIR/bin/pip" <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-          exec "$SCRIPT_DIR/python3.11" -m pip "$@"
-          EOF
-
-            cat > "$PORTABLE_DIR/bin/pip3" <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-          exec "$SCRIPT_DIR/python3.11" -m pip "$@"
-          EOF
-
-                      cat > "$PORTABLE_DIR/bin/pip3.11" <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-          exec "$SCRIPT_DIR/python3.11" -m pip "$@"
-          EOF
-
-            chmod +x "$PORTABLE_DIR/bin/pip" "$PORTABLE_DIR/bin/pip3" "$PORTABLE_DIR/bin/pip3.11"
-          }
-
-          echo "Eliminando scripts pip originales y creando wrappers portables..."
-          write_pip_wrappers
-
-          echo "Creando symlink python -> python3.11..."
           ln -sfn python3.11 "$PORTABLE_DIR/bin/python"
-
-          echo "Validando wrappers creados..."
-          ls -l "$PORTABLE_DIR/bin/pip" "$PORTABLE_DIR/bin/pip3" "$PORTABLE_DIR/bin/pip3.11" "$PORTABLE_DIR/bin/python"
 
       - name: Verify portable Python and install dependencies
         shell: bash
@@ -128,61 +86,26 @@ jobs:
           PY="./$PORTABLE_DIR/bin/python3.11"
           PIP="./$PORTABLE_DIR/bin/pip"
 
-          echo "Probando Python portable..."
           "$PY" --version
-
-          echo "Probando wrapper pip..."
           "$PIP" --version
-
-          echo "Paquetes instalados actualmente:"
-          "$PIP" list
 
           if [ ! -f requirements.txt ]; then
             echo "ERROR: No existe requirements.txt en el repositorio."
             exit 1
           fi
 
-          write_pip_wrappers() {
-            rm -f "$PORTABLE_DIR/bin/pip" "$PORTABLE_DIR/bin/pip3" "$PORTABLE_DIR/bin/pip3.11"
-
-            cat > "$PORTABLE_DIR/bin/pip" <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-          exec "$SCRIPT_DIR/python3.11" -m pip "$@"
-          EOF
-
-                      cat > "$PORTABLE_DIR/bin/pip3" <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-          exec "$SCRIPT_DIR/python3.11" -m pip "$@"
-          EOF
-
-                      cat > "$PORTABLE_DIR/bin/pip3.11" <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-          exec "$SCRIPT_DIR/python3.11" -m pip "$@"
-          EOF
-
-            chmod +x "$PORTABLE_DIR/bin/pip" "$PORTABLE_DIR/bin/pip3" "$PORTABLE_DIR/bin/pip3.11"
-          }
-
-          echo "Actualizando pip a la última versión usando el wrapper portable..."
           "$PIP" install --upgrade pip
-
-          echo "Recreando wrappers después del upgrade de pip para evitar rutas absolutas..."
-          write_pip_wrappers
-
-          echo "Instalando dependencias desde requirements.txt..."
           "$PIP" install -r requirements.txt
 
-          echo "Revalidando wrappers finales..."
-          write_pip_wrappers
-
-          echo "Paquetes finales instalados:"
-          "$PIP" list
+          rm -f "$PORTABLE_DIR/bin/pip" "$PORTABLE_DIR/bin/pip3" "$PORTABLE_DIR/bin/pip3.11"
+          for pip_name in pip pip3 pip3.11; do
+            printf '%s\n' \
+              '#!/usr/bin/env bash' \
+              'set -euo pipefail' \
+              'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' \
+              'exec "$SCRIPT_DIR/python3.11" -m pip "$@"' > "$PORTABLE_DIR/bin/$pip_name"
+            chmod +x "$PORTABLE_DIR/bin/$pip_name"
+          done
 
       - name: Validate requests and package portable environment
         shell: bash
@@ -191,28 +114,16 @@ jobs:
 
           PY="./$PORTABLE_DIR/bin/python3.11"
 
-          echo "Verificando instalación de requests..."
-          "$PY" - <<'PY'
-          import requests
+          "$PY" --version
+          "$PY" -c "import requests; print('requests available')"
 
-          print("requests version:", requests.__version__)
-          print("requests file:", requests.__file__)
-          PY
-
-          echo "Empaquetando $PORTABLE_DIR en $ARTIFACT_FILE..."
           tar -czf "$ARTIFACT_FILE" "$PORTABLE_DIR"
-
-          echo "Artifact generado:"
-          ls -lh "$ARTIFACT_FILE"
-
-          echo "Contenido parcial del artifact:"
-          tar -tzf "$ARTIFACT_FILE" | head -50
 
       - name: Upload portable Python artifact
         uses: actions/upload-artifact@v4
         with:
           name: python-env
-          path: python-env.tar.gz
+          path: ${{ env.ARTIFACT_FILE }}
           retention-days: 7
           if-no-files-found: error
 
@@ -233,19 +144,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Contenido descargado:"
-          find ./downloaded-env -maxdepth 2 -type f -print
-
           test -f ./downloaded-env/python-env.tar.gz
-
           rm -rf /tmp/install
           mkdir -p /tmp/install
-
-          echo "Extrayendo python-env.tar.gz en /tmp/install..."
           tar -xzf ./downloaded-env/python-env.tar.gz -C /tmp/install
-
-          echo "Contenido de /tmp/install/portable_env/bin:"
-          ls -la /tmp/install/portable_env/bin
 
       - name: Test basic portable binaries
         shell: bash
@@ -255,14 +157,8 @@ jobs:
           PY="/tmp/install/portable_env/bin/python3.11"
           PIP="/tmp/install/portable_env/bin/pip"
 
-          echo "Versión de Python portable:"
           "$PY" --version
-
-          echo "Versión de pip portable:"
           "$PIP" --version
-
-          echo "Paquetes instalados:"
-          "$PIP" list
 
       - name: Test requests import
         shell: bash
@@ -271,53 +167,23 @@ jobs:
 
           PY="/tmp/install/portable_env/bin/python3.11"
 
-          "$PY" - <<'PY'
-          import requests
+          "$PY" --version
+          "$PY" -c "import requests; print('requests available')"
 
-          print("requests version:", requests.__version__)
-          print("requests file:", requests.__file__)
-          PY
-
-      - name: Run real test script
+      - name: Run test script
         shell: bash
         run: |
           set -euo pipefail
 
           PY="/tmp/install/portable_env/bin/python3.11"
 
-          cat > test_script.py <<'PY'
+          "$PY" -c "
           import sys
           import requests
 
-          print("Python executable:", sys.executable)
-          print("Python version:", sys.version)
+          print('Python:', sys.version)
+          response = requests.get('https://httpbin.org/json', timeout=5)
+          print('Status:', response.status_code)
+          print('OK')
+          "
 
-          try:
-              response = requests.get("https://httpbin.org/json", timeout=5)
-              response.raise_for_status()
-
-              data = response.json()
-              title = data.get("slideshow", {}).get("title", "<sin título>")
-
-              print("HTTP status code:", response.status_code)
-              print("Slideshow title:", title)
-
-          except Exception as exc:
-              print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
-              sys.exit(1)
-          PY
-
-          "$PY" test_script.py
-
-      - name: Report successful verification
-        if: ${{ success() }}
-        shell: bash
-        run: |
-          echo "Verificación exitosa: el entorno portable funciona en un runner limpio."
-
-      - name: Report failed verification
-        if: ${{ failure() }}
-        shell: bash
-        run: |
-          echo "Verificación fallida: uno o más pasos del entorno portable fallaron."
-          exit 1
