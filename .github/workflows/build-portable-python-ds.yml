@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
   push:
     branches: [main, master]
-  paths:
-    - 'requirements.txt'
-    - '.github/workflows/build-portable-python-ds.yml'
+    paths:
+      - 'requirements.txt'
+      - '.github/workflows/build-portable-python-ds.yml'
 
 jobs:
   # JOB 1: Construir el entorno portable
