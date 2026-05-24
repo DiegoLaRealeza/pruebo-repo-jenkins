@@ -60,12 +60,8 @@ jobs:
           rm -rf "$PORTABLE_DIR"
           mkdir -p "$PORTABLE_DIR"
           cp -a python/. "$PORTABLE_DIR/"
-          curl -fL --retry 3 --retry-delay 5 \
-            -o get-pip.py \
-            https://bootstrap.pypa.io/get-pip.py
-          "./$PORTABLE_DIR/bin/python3.11" get-pip.py
 
-          rm -f get-pip.py
+          "./$PORTABLE_DIR/bin/python3.11" -m ensurepip --upgrade
 
           for pip_name in pip pip3 pip3.11; do
             printf '%s\n' \
